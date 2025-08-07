@@ -13,6 +13,8 @@ load_dotenv()
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
+server_url = 'https://gisurat.com/govardhan/gi_chatbot/'
+
 app = Flask(__name__)
 SESSION_USERS = {}  # temporary session mapping {mobile: user_id}
 
@@ -54,7 +56,7 @@ def is_valid_mobile(mobile):
 
 def get_user_id_from_php(mobile):
     try:
-        res = requests.get(f"http://localhost/sumit_chat/api/get_user.php?mobile={mobile}")
+        res = requests.get(f"{server_url}/get_user.php?mobile={mobile}")
         return res.json().get("user_id")
     except Exception as e:
         print("Error fetching user:", e)
@@ -82,48 +84,52 @@ def chat():
         return jsonify({
             "status": "need_user_info",
             "message": "Please provide your mobile number to continue."
-        })
+        }),400
 
     if not is_valid_mobile(mobile):
         return jsonify({"status": "error", "message": "Invalid mobile number."}), 400
 
     # If mobile already in session cache
-    if mobile in SESSION_USERS:
-        user_id = SESSION_USERS[mobile]
-    else:
+    user_id = SESSION_USERS.get(mobile)
+    
+    #if not already cached, check from PHP
+    if not user_id:
         # Check if user already exists in MySQL
         user_id = get_user_id_from_php(mobile)
-        if user_id:
-            SESSION_USERS[mobile] = user_id
-        else:
+        if not user_id:
             # If not found, require name to create user
             if not name or name.strip() == "":
                 return jsonify({
                     "status": "need_name",
                     "message": "Please provide your name to continue."
                 })
+        try:
+            # Save user to PHP API
+            print("Query :",f"{server_url}/save_query.php")
+            res = requests.post(f"{server_url}/save_user.php", data={
+                "name": name.strip(),
+                "mobile": mobile
+            })
 
-        # Save user to PHP API
-        res = requests.post("http://localhost/sumit_chat/api/save_user.php", data={
-            "name": name.strip(),
-            "mobile": mobile
-        })
+            user_id = res.json().get("user_id")
+            if not user_id:
+                return jsonify({"status": "error", "message": "User could not be saved."}), 500
 
-        user_id = res.json().get("user_id")
-        if not user_id:
-            return jsonify({"status": "error", "message": "User could not be saved."}), 500
+            SESSION_USERS[mobile] = user_id
+        except Exception as e:
+            print("Error saving user:",e)
+            return jsonify({"status":"error","message":"Server error while saving user details."}),500
 
-        SESSION_USERS[mobile] = user_id
-
-    else:
-        # For returning users
-        user_id = SESSION_USERS.get(mobile)
+        else:
+            # For returning users
+            SESSION_USERS[mobile] = user_id
 
     # Step 3: Run RAG
     answer = qa.run(question)  # using your RAG chain here
 
     # Step 4: Save Q&A in MySQL (via PHP)
-    requests.post("http://localhost/sumit_chat/api/save_query.php", data={
+    print("Query :",f"{server_url}/save_query.php")
+    requests.post(f"{server_url}/save_query.php", data={
         "user_id": user_id,
         "question": question,
         "response": answer
